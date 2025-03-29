@@ -1,5 +1,5 @@
 package usecase
 
 type ReconciliationUsecase interface {
-	ReconcileData()
+	ReconcileData(internalTrxData multipart.File, bankStatement []multipart.File)
 }

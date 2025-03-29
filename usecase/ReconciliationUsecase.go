@@ -9,5 +9,8 @@ type ReconciliationUsecaseImpl struct {
 	BankStatementRP repository.BankStatementRPInterface
 }
 
-func (uc ReconciliationUsecaseImpl) ReconcileData() {
+func (uc ReconciliationUsecaseImpl) ReconcileData(
+	internalTrxData multipart.File, bankStatement []multipart.File,
+	) {
+		
 }
