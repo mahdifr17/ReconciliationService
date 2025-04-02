@@ -1,5 +1,9 @@
 package usecase
 
+import (
+	"encoding/csv"
+)
+
 type ReconciliationUsecase interface {
-	ReconcileData(internalTrxData multipart.File, bankStatement []multipart.File)
+	ReconcileData(csvInternalTrxData *csv.Reader, csvBankStatements []*csv.Reader)
 }
