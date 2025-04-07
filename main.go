@@ -1,9 +1,11 @@
 package main
 
 import (
+	"bufio"
 	"encoding/csv"
 	"fmt"
 	"os"
+	"strings"
 
 	"github.com/mahdifr17/ReconciliationService/usecase"
 )
@@ -11,9 +13,17 @@ import (
 func main() {
 	fmt.Println("Reconciliation Service")
 
+	reader := bufio.NewReader(os.Stdin)
+	fmt.Print("Enter internal transaction csv location: ")
+	inputInternalDataLoc, err := reader.ReadString('\n')
+	if err != nil {
+		panic(err)
+	}
+	inputInternalDataLoc = strings.TrimSpace(inputInternalDataLoc)
+
 	// Internal Data
 	// Open file
-	internalData, err := os.Open("internalTransactionData.csv")
+	internalData, err := os.Open(inputInternalDataLoc)
 	if err != nil {
 		panic(err)
 	}
@@ -22,39 +32,30 @@ func main() {
 	readerInternalData := csv.NewReader(internalData)
 
 	// Bank Statement
-	bankStatement1, err := os.Open("bankStatementAbc.csv")
+	fmt.Print("Enter multiple bank statement csv location (separate with ';'): ")
+	inputBankStatementsLoc, err := reader.ReadString('\n')
 	if err != nil {
 		panic(err)
 	}
-	defer bankStatement1.Close()
-	// Create a new CSV reader
-	readerBankStatement1 := csv.NewReader(bankStatement1)
+	inputBankStatementsLoc = strings.TrimSpace(inputBankStatementsLoc)
+	bankStatementsLoc := strings.Split(inputBankStatementsLoc, ";")
 
-	bankStatement2, err := os.Open("bankStatementDef.csv")
-	if err != nil {
-		panic(err)
+	listReaderBankStatement := make([]*csv.Reader, 0)
+	for _, bankStatementLoc := range bankStatementsLoc {
+		bankStatement, err := os.Open(bankStatementLoc)
+		if err != nil {
+			panic(err)
+		}
+		defer bankStatement.Close()
+		// Create a new CSV reader
+		readerBankStatement := csv.NewReader(bankStatement)
+		listReaderBankStatement = append(listReaderBankStatement, readerBankStatement)
 	}
-	defer bankStatement2.Close()
-	// Create a new CSV reader
-	readerBankStatement2 := csv.NewReader(bankStatement2)
-
-	bankStatement3, err := os.Open("bankStatementDku.csv")
-	if err != nil {
-		panic(err)
-	}
-	defer bankStatement3.Close()
-	// Create a new CSV reader
-	readerBankStatement3 := csv.NewReader(bankStatement3)
-
-	bankStatement4, err := os.Open("bankStatementZdt.csv")
-	if err != nil {
-		panic(err)
-	}
-	defer bankStatement4.Close()
-	// Create a new CSV reader
-	readerBankStatement4 := csv.NewReader(bankStatement4)
 
 	var uc usecase.ReconciliationUsecase
 	uc = new(usecase.ReconciliationUsecaseImpl)
-	uc.ReconcileData(readerInternalData, []*csv.Reader{readerBankStatement1, readerBankStatement2, readerBankStatement3, readerBankStatement4})
+	result := uc.ReconcileData(readerInternalData, listReaderBankStatement)
+	for _, v := range result {
+		fmt.Printf("%s Remark: %s\n", v.TrxId, v.Remark)
+	}
 }

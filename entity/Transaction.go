@@ -10,6 +10,7 @@ type Transaction struct {
 	Amount          float64
 	Type            TransactionType
 	TransactionTime time.Time // datetime format
+	Remark          string
 }
 
 func (t *Transaction) ReadFromCsv(input []string) (err error) {
