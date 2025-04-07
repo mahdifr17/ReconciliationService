@@ -2,52 +2,66 @@ package utils
 
 import (
 	"encoding/csv"
+	"fmt"
+	"io"
 
 	"github.com/mahdifr17/ReconciliationService/entity"
 )
 
-func LoadCsv(csvReader *csv.Reader) ([][]string, error) {
-	return csvReader.ReadAll()
-}
-
-func LoadCsvInternalTrx(csvReader *csv.Reader) ([]entity.Transaction, error) {
-	out := make([]entity.Transaction, 0)
-
-	csvData, err := LoadCsv(csvReader)
-	if err != nil {
-		return nil, err
+func LoadCsvInternalTrx(csvReader *csv.Reader, streamTrx chan<- entity.Transaction) {
+	_, errHeader := csvReader.Read() // header
+	if errHeader == io.EOF {
+		close(streamTrx)
+		return
 	}
+	for {
+		row, errRead := csvReader.Read()
+		switch errRead {
+		case io.EOF:
+			close(streamTrx)
+			return
+		case nil:
+			// continue
+		default: // uncatch error
+			fmt.Println("error read interal csv", errRead.Error())
+			close(streamTrx)
+			panic(errRead)
+		}
 
-	trx := new(entity.Transaction)
-	for _, row := range csvData {
-		err = trx.ReadFromCsv(row)
-		if err != nil {
-			// notif user this data is error
+		trx := new(entity.Transaction)
+		errData := trx.ReadFromCsv(row)
+		if errData != nil {
+			fmt.Println("invalid interal data", row, errData.Error())
 			continue
 		}
-		out = append(out, *trx)
-	}
 
-	return out, nil
+		streamTrx <- *trx
+	}
 }
 
-func LoadCsvBankStatement(csvReader *csv.Reader) ([]entity.BankStatement, error) {
-	out := make([]entity.BankStatement, 0)
+func LoadCsvBankStatement(csvReader *csv.Reader, streamBankStatement chan<- entity.BankStatement) {
+	csvReader.Read() // header
+	for {
+		row, errRead := csvReader.Read()
+		switch errRead {
+		case io.EOF:
+			close(streamBankStatement)
+			return
+		case nil:
+			// continue
+		default: // uncatch error
+			fmt.Println("error read bank statement csv", errRead.Error())
+			close(streamBankStatement)
+			panic(errRead)
+		}
 
-	csvData, err := LoadCsv(csvReader)
-	if err != nil {
-		return nil, err
-	}
-
-	bankStatement := new(entity.BankStatement)
-	for _, row := range csvData {
-		err = bankStatement.ReadFromCsv(row)
-		if err != nil {
-			// notif user this data is error
+		bankStatement := new(entity.BankStatement)
+		errData := bankStatement.ReadFromCsv(row)
+		if errData != nil {
+			fmt.Println("invalid bank statement data", row, errData.Error())
 			continue
 		}
-		out = append(out, *bankStatement)
-	}
 
-	return out, nil
+		streamBankStatement <- *bankStatement
+	}
 }

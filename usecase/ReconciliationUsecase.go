@@ -3,7 +3,9 @@ package usecase
 import (
 	"encoding/csv"
 	"fmt"
+	"math"
 	"sync"
+	"time"
 
 	"github.com/mahdifr17/ReconciliationService/entity"
 	"github.com/mahdifr17/ReconciliationService/repository"
@@ -19,53 +21,105 @@ type ReconciliationUsecaseImpl struct {
 func (uc ReconciliationUsecaseImpl) ReconcileData(
 	csvInternalTrxData *csv.Reader, csvBankStatements []*csv.Reader,
 ) {
-	// Load the data
-	internalData, err := utils.LoadCsvInternalTrx(csvInternalTrxData)
-	if err != nil {
-		// TODO: err handling
-	}
-
-	bankStatements := make([][]entity.BankStatement, 0)
-	for _, csvBankStatement := range csvBankStatements {
-		bankStatement, err := utils.LoadCsvBankStatement(csvBankStatement)
-		if err != nil {
-			// TODO: err handling
-			continue
-		}
-		bankStatements = append(bankStatements, bankStatement)
-	}
+	fmt.Println("Start Reconcile")
 
 	// Reconcile
-	var wg sync.WaitGroup
-	var mu sync.Mutex
-	var workerNum = len(csvBankStatements) * 2
-
 	// using worker pool
-	jobs := make(chan entity.Transaction, workerNum)
-
-	// do work
-	for i := 0; i < workerNum; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			for job := range jobs {
-				// TODO: decide compare to which bank statement
-				// using pattern match?
-				// we should know whick provider is this bank statement
-				// OR, try every bank statement
-				mu.Lock()
-				fmt.Println(job)
-				mu.Unlock()
-			}
-		}()
-	}
+	var (
+		wg                   sync.WaitGroup
+		mu                   sync.Mutex
+		cond                 = sync.NewCond(&mu)
+		csvBuffer            = 1000
+		workerNumPerBs       = 3
+		mapTrxInternalBuffer = 20
+		mapInternalTrx       = make(map[string]entity.Transaction)
+		streamTrxInternal    = make(chan entity.Transaction, csvBuffer)
+		streamBankStatements = make([]chan entity.BankStatement, 0)
+	)
 
 	// seed job
-	for _, trx := range internalData {
-		jobs <- trx
+	// read data internal transaction
+	go utils.LoadCsvInternalTrx(csvInternalTrxData, streamTrxInternal)
+	go func() {
+		for trxInternal := range streamTrxInternal {
+			cond.L.Lock()
+			mapInternalTrx[trxInternal.TrxId] = trxInternal
+			if len(mapInternalTrx) > len(csvBankStatements)*workerNumPerBs*mapTrxInternalBuffer {
+				cond.Broadcast()
+			}
+			cond.L.Unlock()
+		}
+		cond.Broadcast()
+	}()
+	time.Sleep(1 * time.Second)
+	// read data bank statement
+	for _, csvBankStatement := range csvBankStatements {
+		streamBankStatement := make(chan entity.BankStatement, csvBuffer)
+		streamBankStatements = append(streamBankStatements, streamBankStatement)
+		go utils.LoadCsvBankStatement(csvBankStatement, streamBankStatement)
 	}
-	close(jobs)
+
+	// do work
+	for _, streamBankStatement := range streamBankStatements {
+		for i := 0; i < workerNumPerBs; i++ {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				for bankStatement := range streamBankStatement {
+					cond.L.Lock() // for locking mapInternalTrx
+					for len(mapInternalTrx) < mapTrxInternalBuffer && len(streamTrxInternal) > 0 {
+						cond.Wait()
+					}
+					uc.compareData(bankStatement, mapInternalTrx)
+					cond.L.Unlock()
+				}
+			}()
+		}
+	}
 
 	wg.Wait()
 	// complete
+
+	// check is there any more internal trx, if this happen, then trx not found on bank statement
+	uc.checkRemainingTrxInternal(mapInternalTrx)
+	fmt.Println("Finish Reconcile")
+}
+
+// Cases
+// exist on bank statement - not found on internal
+// not found on bank statement - exist on internal
+// different amount
+func (uc ReconciliationUsecaseImpl) compareData(
+	bankStatement entity.BankStatement, mapInternalTrx map[string]entity.Transaction,
+) bool {
+	trx, exist := mapInternalTrx[bankStatement.UniqueIdentifier]
+	if !exist {
+		fmt.Println("Not Found on internal transaction", bankStatement)
+		return false
+	}
+
+	compareAmount := bankStatement.Amount
+	if trx.Type == entity.TrxTypeDebit {
+		compareAmount = math.Abs(bankStatement.Amount)
+	}
+
+	if compareAmount != trx.Amount {
+		fmt.Println("Invalid amount", bankStatement, trx)
+		return false
+	}
+
+	delete(mapInternalTrx, bankStatement.UniqueIdentifier)
+	return true
+}
+
+// Cases
+// exist on bank statement - not found on internal
+// not found on bank statement - exist on internal
+// different amount
+func (uc ReconciliationUsecaseImpl) checkRemainingTrxInternal(
+	mapInternalTrx map[string]entity.Transaction,
+) {
+	for _, internalTrx := range mapInternalTrx {
+		fmt.Println("Not Found on bank statement", internalTrx)
+	}
 }
