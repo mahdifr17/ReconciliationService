@@ -4,6 +4,7 @@ import (
 	"encoding/csv"
 	"fmt"
 	"math"
+	"strconv"
 	"sync"
 	"time"
 
@@ -24,12 +25,12 @@ type ReconciliationUsecaseImpl struct {
 // Reconcile
 // using worker pool
 func (uc ReconciliationUsecaseImpl) ReconcileData(
-	csvInternalTrxData *csv.Reader, csvBankStatements []*csv.Reader,
-) []entity.ReconciliationResult {
+	csvInternalTrxData *csv.Reader, csvBankStatements []*csv.Reader, startDate, endDate time.Time,
+) entity.ReconciliationResult {
 	fmt.Println("Start Reconcile")
 
 	var (
-		out                  = make([]entity.ReconciliationResult, 0)
+		out                  = new(entity.ReconciliationResult)
 		timeout              = time.After(1 * time.Minute)
 		wg                   sync.WaitGroup
 		mu                   sync.Mutex
@@ -40,12 +41,15 @@ func (uc ReconciliationUsecaseImpl) ReconcileData(
 		streamBankStatements = make([]chan entity.BankStatement, 0)
 		chanFinish           = make(chan bool)
 	)
+	out.ListMissingTransactionInternal = make(map[string][]entity.CompareResult)
 
 	// seed job
 	// read data internal transaction
 	go utils.LoadCsvInternalTrx(csvInternalTrxData, streamTrxInternal)
 	for trxInternal := range streamTrxInternal {
-		mapInternalTrx[trxInternal.TrxId] = &trxInternal
+		if isInRangeDate(trxInternal.TransactionTime, startDate, endDate) {
+			mapInternalTrx[trxInternal.TrxId] = &trxInternal
+		}
 	}
 	// read data bank statement
 	for _, csvBankStatement := range csvBankStatements {
@@ -55,16 +59,30 @@ func (uc ReconciliationUsecaseImpl) ReconcileData(
 	}
 
 	// do work
-	for _, streamBankStatement := range streamBankStatements {
+	for idx, streamBankStatement := range streamBankStatements {
 		for i := 0; i < workerPerBs; i++ {
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
 				for bankStatement := range streamBankStatement {
+					if !isInRangeDate(bankStatement.Date.Add(5*time.Minute), startDate, endDate) {
+						continue
+					}
+
 					mu.Lock()
 					result := uc.compareData(bankStatement, mapInternalTrx)
-					if result.Remark != "" {
-						out = append(out, result)
+					out.TotalTransactionProcessed++
+					if result.Remark == "" {
+						out.TotalMatchTransaction++
+					} else if result.Remark == errCaseAmountMismatch {
+						diff := result.InternalTransaction.Amount - result.BankStatement.Amount
+						out.TotalDiscrepancies += math.Abs(diff)
+					} else {
+						sIdx := strconv.Itoa(idx)
+						if _, exist := out.ListMissingTransactionInternal[sIdx]; !exist {
+							out.ListMissingTransactionInternal[sIdx] = make([]entity.CompareResult, 0)
+						}
+						out.ListMissingTransactionInternal[sIdx] = append(out.ListMissingTransactionInternal[sIdx], result)
 					}
 					mu.Unlock()
 				}
@@ -85,11 +103,18 @@ func (uc ReconciliationUsecaseImpl) ReconcileData(
 		// check is there any more internal trx, if this happen, then trx not found on bank statement
 		result := uc.checkRemainingTrxInternal(mapInternalTrx)
 		if len(result) != 0 {
-			out = append(out, result...)
+			out.ListMissingTransactionBank = result
 		}
 		fmt.Println("Finish Reconcile")
 	}
-	return out
+	return *out
+}
+
+func isInRangeDate(check, startDate, endDate time.Time) bool {
+	if check.After(startDate) && check.Before(endDate) {
+		return true
+	}
+	return false
 }
 
 // Cases
@@ -97,10 +122,10 @@ func (uc ReconciliationUsecaseImpl) ReconcileData(
 // different amount
 func (uc ReconciliationUsecaseImpl) compareData(
 	bankStatement entity.BankStatement, mapInternalTrx map[string]*entity.Transaction,
-) entity.ReconciliationResult {
+) entity.CompareResult {
 	trx, exist := mapInternalTrx[bankStatement.UniqueIdentifier]
 	if !exist {
-		return entity.ReconciliationResult{TrxId: bankStatement.UniqueIdentifier, Remark: errCaseNotFoundOnInternal}
+		return entity.CompareResult{BankStatement: bankStatement, Remark: errCaseNotFoundOnInternal}
 	}
 
 	compareAmount := bankStatement.Amount
@@ -110,22 +135,22 @@ func (uc ReconciliationUsecaseImpl) compareData(
 
 	if compareAmount != trx.Amount {
 		trx.Remark = errCaseAmountMismatch
-		return entity.ReconciliationResult{TrxId: bankStatement.UniqueIdentifier, Remark: errCaseAmountMismatch}
+		return entity.CompareResult{InternalTransaction: *trx, BankStatement: bankStatement, Remark: errCaseAmountMismatch}
 	}
 
 	delete(mapInternalTrx, bankStatement.UniqueIdentifier)
-	return entity.ReconciliationResult{}
+	return entity.CompareResult{}
 }
 
 // Cases
 // not found on bank statement - exist on internal
 func (uc ReconciliationUsecaseImpl) checkRemainingTrxInternal(
 	mapInternalTrx map[string]*entity.Transaction,
-) (out []entity.ReconciliationResult) {
-	out = make([]entity.ReconciliationResult, 0)
+) (out []entity.CompareResult) {
+	out = make([]entity.CompareResult, 0)
 	for _, internalTrx := range mapInternalTrx {
 		if internalTrx.Remark != errCaseAmountMismatch {
-			out = append(out, entity.ReconciliationResult{TrxId: internalTrx.TrxId, Remark: errCaseNotFoundOnBankStatement})
+			out = append(out, entity.CompareResult{InternalTransaction: *internalTrx, Remark: errCaseNotFoundOnBankStatement})
 		}
 	}
 	return out

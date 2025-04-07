@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/mahdifr17/ReconciliationService/usecase"
 )
@@ -52,10 +53,41 @@ func main() {
 		listReaderBankStatement = append(listReaderBankStatement, readerBankStatement)
 	}
 
+	// Start date
+	fmt.Print("Start reconciliation date (yyyy-mm-dd): ")
+	inputStartDate, err := reader.ReadString('\n')
+	if err != nil {
+		panic(err)
+	}
+	inputStartDate = strings.TrimSpace(inputStartDate)
+	startDate, err := time.Parse(time.DateOnly, inputStartDate)
+	if err != nil {
+		panic(err)
+	}
+
+	// End date
+	fmt.Print("End reconciliation date (yyyy-mm-dd): ")
+	inputEndDate, err := reader.ReadString('\n')
+	if err != nil {
+		panic(err)
+	}
+	inputEndDate = strings.TrimSpace(inputEndDate)
+	endDate, err := time.Parse(time.DateOnly, inputEndDate)
+	if err != nil {
+		panic(err)
+	}
+	endDate = endDate.Add(86399 * time.Second) // 23:59:59
+	if startDate.After(endDate) {
+		panic("invalid start-end date")
+	}
+
 	var uc usecase.ReconciliationUsecase
 	uc = new(usecase.ReconciliationUsecaseImpl)
-	result := uc.ReconcileData(readerInternalData, listReaderBankStatement)
-	for _, v := range result {
-		fmt.Printf("%s Remark: %s\n", v.TrxId, v.Remark)
-	}
+	result := uc.ReconcileData(readerInternalData, listReaderBankStatement, startDate, endDate)
+	fmt.Printf("Total Transaction Processed: %d\n", result.TotalTransactionProcessed)
+	fmt.Printf("Total Match Transaction: %d\n", result.TotalMatchTransaction)
+	fmt.Printf("Detail Unmatch Transaction:\n")
+	fmt.Printf("Missing in Bank Statement: %+v\n", result.ListMissingTransactionBank)
+	fmt.Printf("Missing in Internal Transaction: %+v\n", result.ListMissingTransactionInternal)
+	fmt.Printf("Total Discrepancies: %v\n", result.TotalDiscrepancies)
 }

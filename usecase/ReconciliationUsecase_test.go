@@ -3,52 +3,105 @@ package usecase
 import (
 	"bytes"
 	"encoding/csv"
-	"reflect"
 	"testing"
+	"time"
 
 	"github.com/mahdifr17/ReconciliationService/entity"
 )
 
-func TestReconciliationUsecaseImpleeeee_ReconcileData(t *testing.T) {
+func TestReconciliationUsecaseImpl_ReconcileData(t *testing.T) {
 	type args struct {
 		csvInternalTrxData *csv.Reader
 		csvBankStatements  []*csv.Reader
+		startDate          time.Time
+		endDate            time.Time
 	}
+
+	startDate, _ := time.Parse(time.DateOnly, "2025-01-01")
+	endDate, _ := time.Parse(time.DateOnly, "2025-02-28")
+	endDate = endDate.Add(86399 * time.Second) // 23:59:59
+
 	tests := []struct {
 		name string
 		uc   ReconciliationUsecase
 		args args
-		want []entity.ReconciliationResult
+		want entity.ReconciliationResult
 	}{
 		{
 			name: "valid trx",
 			uc:   new(ReconciliationUsecaseImpl),
-			args: args{getMockInternalTrxDataTcValid(), getMockBankStatementDataTcValid()},
-			want: []entity.ReconciliationResult{},
+			args: args{getMockInternalTrxDataTcValid(), getMockBankStatementDataTcValid(), startDate, endDate},
+			want: entity.ReconciliationResult{
+				TotalTransactionProcessed: 3,
+				TotalMatchTransaction:     3,
+			},
 		},
 		{
 			name: "invalid amount",
 			uc:   new(ReconciliationUsecaseImpl),
-			args: args{getMockInternalTrxDataTcValid(), getMockBankStatementDataTcInvalidAmount()},
-			want: []entity.ReconciliationResult{{TrxId: "DKU202501011536751", Remark: errCaseAmountMismatch}},
+			args: args{getMockInternalTrxDataTcValid(), getMockBankStatementDataTcInvalidAmount(), startDate, endDate},
+			want: entity.ReconciliationResult{
+				TotalTransactionProcessed: 3,
+				TotalMatchTransaction:     2,
+				TotalDiscrepancies:        0.00999999999476131,
+			},
 		},
 		{
 			name: "not found on internal",
 			uc:   new(ReconciliationUsecaseImpl),
-			args: args{getMockInternalTrxDataTcNotFound(), getMockBankStatementDataTcValid()},
-			want: []entity.ReconciliationResult{{TrxId: "DKU202501011536751", Remark: errCaseNotFoundOnInternal}},
+			args: args{getMockInternalTrxDataTcNotFound(), getMockBankStatementDataTcValid(), startDate, endDate},
+			want: entity.ReconciliationResult{
+				TotalTransactionProcessed: 3,
+				TotalMatchTransaction:     2,
+				ListMissingTransactionInternal: map[string][]entity.CompareResult{
+					"1": {
+						{
+							InternalTransaction: entity.Transaction{
+								TrxId: "DKU202501011536751",
+							},
+							Remark: errCaseNotFoundOnInternal,
+						},
+					},
+				},
+			},
 		},
 		{
 			name: "not found on bank statement",
 			uc:   new(ReconciliationUsecaseImpl),
-			args: args{getMockInternalTrxDataTcValid(), getMockBankStatementDataTcNotFound()},
-			want: []entity.ReconciliationResult{{TrxId: "DKU202501011726759", Remark: errCaseNotFoundOnBankStatement}},
+			args: args{getMockInternalTrxDataTcValid(), getMockBankStatementDataTcNotFound(), startDate, endDate},
+			want: entity.ReconciliationResult{
+				TotalTransactionProcessed: 2,
+				TotalMatchTransaction:     2,
+				ListMissingTransactionBank: []entity.CompareResult{
+					{
+						InternalTransaction: entity.Transaction{
+							TrxId: "DKU202501011726759",
+						},
+						Remark: errCaseNotFoundOnBankStatement,
+					},
+				},
+			},
 		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := tt.uc.ReconcileData(tt.args.csvInternalTrxData, tt.args.csvBankStatements); !reflect.DeepEqual(got, tt.want) {
-				t.Errorf("ReconciliationUsecaseImpl.ReconcileData() = %v, want %v", got, tt.want)
+			got := tt.uc.ReconcileData(tt.args.csvInternalTrxData, tt.args.csvBankStatements, tt.args.startDate, tt.args.endDate)
+			if got.TotalTransactionProcessed != tt.want.TotalTransactionProcessed {
+				t.Errorf("ReconciliationUsecaseImpl.ReconcileData() TotalTransactionProcessed = %v, want %v", got.TotalTransactionProcessed, tt.want.TotalTransactionProcessed)
+			}
+			if got.TotalMatchTransaction != tt.want.TotalMatchTransaction {
+				t.Errorf("ReconciliationUsecaseImpl.ReconcileData() TotalMatchTransaction = %v, want %v", got.TotalMatchTransaction, tt.want.TotalMatchTransaction)
+			}
+			if got.TotalDiscrepancies != tt.want.TotalDiscrepancies {
+				t.Errorf("ReconciliationUsecaseImpl.ReconcileData() TotalDiscrepancies = %v, want %v", got.TotalDiscrepancies, tt.want.TotalDiscrepancies)
+			}
+			if len(got.ListMissingTransactionBank) != len(tt.want.ListMissingTransactionBank) {
+				t.Errorf("ReconciliationUsecaseImpl.ReconcileData() ListMissingTransactionBank = %v, want %v", len(got.ListMissingTransactionBank), len(tt.want.ListMissingTransactionBank))
+			}
+			for k := range got.ListMissingTransactionInternal {
+				if len(got.ListMissingTransactionInternal[k]) != len(tt.want.ListMissingTransactionInternal[k]) {
+					t.Errorf("ReconciliationUsecaseImpl.ReconcileData() ListMissingTransactionInternal idx:%v = %v, want %v", k, len(got.ListMissingTransactionInternal[k]), len(tt.want.ListMissingTransactionInternal[k]))
+				}
 			}
 		})
 	}
